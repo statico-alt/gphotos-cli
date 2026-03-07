@@ -1,0 +1,6 @@
+.cookies.json
+.browser-profile/
+node_modules/
+photos/
+*.har
+debug-*.png

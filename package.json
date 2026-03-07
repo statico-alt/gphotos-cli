@@ -1,0 +1,16 @@
+{
+  "name": "gphotos-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "gphotos": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "gphotos": "bun src/cli.ts"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "playwright": "^1.52.0"
+  }
+}
