@@ -111,4 +111,4 @@ The tool uses Google's internal `batchexecute` RPC protocol. Known endpoint IDs 
 
 ## License
 
-MIT
+[Unlicense](LICENSE) — public domain
