@@ -10,7 +10,6 @@
     "gphotos": "bun src/cli.ts"
   },
   "dependencies": {
-    "commander": "^13.1.0",
-    "playwright": "^1.52.0"
+    "commander": "^13.1.0"
   }
 }

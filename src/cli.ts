@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from 'commander'
-import { login, loadAuth, parseTOTPSecret } from './auth'
+import { importCookies, loadAuth } from './auth'
 import { GooglePhotosAPI } from './api'
 import { findHashDuplicates, findPerceptualDuplicates, type DateRange } from './dedup'
 import { mkdirSync, existsSync } from 'fs'
@@ -15,15 +15,10 @@ program
 // ─── auth ───
 program
   .command('auth')
-  .description('Login to Google Photos via browser')
-  .requiredOption('-e, --email <email>', 'Google account email')
-  .requiredOption('-p, --password <password>', 'Account password')
-  .requiredOption('-o, --otp <otpauth_url>', 'TOTP otpauth:// URL or raw secret')
+  .description('Import cookies from a Netscape cookies.txt file')
+  .requiredOption('-c, --cookies <file>', 'Path to cookies.txt file exported from your browser')
   .action(async (opts) => {
-    const secret = opts.otp.startsWith('otpauth://')
-      ? parseTOTPSecret(opts.otp)
-      : opts.otp
-    await login(opts.email, opts.password, secret)
+    await importCookies(opts.cookies)
     console.log('Authentication successful!')
   })
 

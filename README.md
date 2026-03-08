@@ -8,17 +8,16 @@ Unofficial Google Photos CLI. List, download, upload, delete, and deduplicate ph
 
 Instead of using the official (and limited) Google Photos API, this tool emulates the web client by:
 
-- **Authentication**: Playwright drives a real Chrome browser through Google's login flow (email, password, TOTP 2FA), persisting cookies for subsequent use
-- **RPC calls**: Uses Google's internal `batchexecute` protocol to list photos, get metadata, commit uploads, etc.
-- **Downloads**: Fetches photos through a Playwright browser context (required because Google's CDN isolates cookies by domain)
+- **Authentication**: Import cookies from your browser (Netscape cookies.txt format, like yt-dlp)
+- **RPC calls**: Uses Google's internal `batchexecute` protocol to list photos, get metadata, trash, commit uploads, etc.
+- **Downloads**: Fetches photos with SAPISIDHASH authentication headers
 - **Uploads**: Uses Google's resumable upload protocol with protobuf-encoded init requests
-- **Trash**: Automates the web UI via Playwright for reliable deletion
 
 ## Requirements
 
 - [Bun](https://bun.sh) runtime
-- Google Chrome installed locally (Playwright uses it via `channel: 'chrome'`)
 - A Google account with Google Photos
+- A browser extension to export cookies (see below)
 
 ## Install
 
@@ -32,15 +31,22 @@ bun install
 
 ### Authenticate
 
-```bash
-# With TOTP otpauth:// URL
-bun run gphotos auth -e you@gmail.com -p 'your-password' -o 'otpauth://totp/...'
+Export your Google cookies using a browser extension, then import them:
 
-# With raw TOTP secret
-bun run gphotos auth -e you@gmail.com -p 'your-password' -o 'YOUR_TOTP_SECRET'
+1. Install a cookie export extension:
+   - Chrome: [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+   - Firefox: [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
+2. Log into [photos.google.com](https://photos.google.com) in your browser
+3. Use the extension to export cookies for the current site to a `cookies.txt` file
+4. Import them:
+
+```bash
+bun run gphotos auth -c cookies.txt
 ```
 
-This opens a real Chrome window, logs in, and saves cookies to `.cookies.json`. Subsequent commands use the saved cookies.
+This reads the cookies, fetches a CSRF token from Google Photos, and saves your session to `.cookies.json`. Subsequent commands use the saved session.
+
+**Note:** Cookies expire periodically. If commands start failing, re-export and re-import your cookies.
 
 ### List photos
 
@@ -103,11 +109,11 @@ The tool uses Google's internal `batchexecute` RPC protocol. Known endpoint IDs 
 
 ## Limitations
 
-- **Authentication requires a visible Chrome window** — headless Chrome is detected by Google as a bot
-- **Session cookies expire** — you'll need to re-authenticate periodically
+- **Session cookies expire** — you'll need to re-export and re-import cookies periodically
 - **Rate limits** — Google may throttle or block requests if you make too many too fast
 - **Fragile** — based on reverse-engineered internal APIs that Google can change at any time
 - **No search** — the search RPC hasn't been implemented yet
+- **Downloads may fail** — if the CDN rejects cookie-based auth, you may need to re-export cookies
 
 ## License
 

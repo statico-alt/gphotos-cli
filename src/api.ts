@@ -213,52 +213,27 @@ export class GooglePhotosAPI {
     const detail = await this.getPhotoDetail(photoId)
     if (!detail) throw new Error(`Photo ${photoId} not found`)
 
-    // Use Playwright browser context to download since CDN requires browser cookies
-    const context = await this.getBrowserContext()
+    const downloadUrl = `${detail.url}=s0-d`
 
-    try {
-      const page = context.pages()[0] || await context.newPage()
-
-      // Navigate to photos.google.com (fast, cached) to get cookie context
-      if (!page.url().startsWith('https://photos.google.com')) {
-        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 15000 })
-      }
-
-      // Use the base URL with download suffix
-      const downloadUrl = `${detail.url}=s0-d`
-
-      // Fetch the image from the page context (has correct cookies)
-      const result = await page.evaluate(async (url: string) => {
-        const resp = await fetch(url, { credentials: 'include' })
-        if (!resp.ok) throw new Error(`Download failed: ${resp.status}`)
-        const blob = await resp.blob()
-        const buffer = await blob.arrayBuffer()
-        return {
-          data: Array.from(new Uint8Array(buffer)),
-          contentType: resp.headers.get('content-type') || '',
-        }
-      }, downloadUrl)
-
-      const ext = this.guessExtension(result.contentType)
-      const filename = outputPath.endsWith('/') ?
-        `${outputPath}${photoId}${ext}` :
-        outputPath
-
-      await Bun.write(filename, new Uint8Array(result.data))
-      return filename
-    } finally {
-      await context.close()
-    }
-  }
-
-  private async getBrowserContext() {
-    const { chromium } = await import('playwright')
-    const userDataDir = new URL('../.browser-profile', import.meta.url).pathname
-    return chromium.launchPersistentContext(userDataDir, {
-      channel: 'chrome',
-      headless: true,
-      args: ['--disable-blink-features=AutomationControlled'],
+    // Download using SAPISIDHASH auth headers (needed for CDN domain)
+    const resp = await fetch(downloadUrl, {
+      headers: this.getAuthHeaders(downloadUrl),
+      redirect: 'follow',
     })
+
+    if (!resp.ok) {
+      throw new Error(`Download failed: ${resp.status} ${resp.statusText}`)
+    }
+
+    const contentType = resp.headers.get('content-type') || ''
+    const ext = this.guessExtension(contentType)
+    const filename = outputPath.endsWith('/') ?
+      `${outputPath}${photoId}${ext}` :
+      outputPath
+
+    const buffer = await resp.arrayBuffer()
+    await Bun.write(filename, new Uint8Array(buffer))
+    return filename
   }
 
   private getSapisidHash(origin: string): string | null {
@@ -295,52 +270,12 @@ export class GooglePhotosAPI {
   }
 
   async trashPhoto(photoId: string): Promise<boolean> {
-    // Use Playwright to trash the photo via the web UI
-    // The batchexecute RPC params for EWgK9e are fragile, so use the UI
-    const context = await this.getBrowserContext()
-
-    try {
-      const page = context.pages()[0] || await context.newPage()
-      await page.goto(`${BASE_URL}/photo/${photoId}`, { waitUntil: 'domcontentloaded', timeout: 20000 })
-      await page.waitForTimeout(3000)
-
-      // Click the delete/trash button — try keyboard shortcut first (# key)
-      await page.keyboard.press('#')
-      await page.waitForTimeout(1000)
-
-      // Look for confirmation dialog and confirm
-      const confirmBtn = await page.$('button:has-text("Move to trash"), button:has-text("Move to Trash")')
-      if (confirmBtn) {
-        await confirmBtn.click()
-        await page.waitForTimeout(2000)
-        return true
-      }
-
-      // If no dialog, maybe the deletion happened immediately or try the menu
-      // Click the 3-dot menu
-      const moreBtn = await page.$('[aria-label="More options"], [data-tooltip="More options"]')
-      if (moreBtn) {
-        await moreBtn.click()
-        await page.waitForTimeout(1000)
-
-        const trashOption = await page.$(':text("Move to trash"), :text("Delete")')
-        if (trashOption) {
-          await trashOption.click()
-          await page.waitForTimeout(1000)
-
-          const confirm2 = await page.$('button:has-text("Move to trash"), button:has-text("Move to Trash")')
-          if (confirm2) {
-            await confirm2.click()
-            await page.waitForTimeout(2000)
-          }
-          return true
-        }
-      }
-
-      return false
-    } finally {
-      await context.close()
-    }
+    // XwAOJf RPC — move to trash
+    // params: [[[photoId]], 1] where 1 = trash (2 = restore)
+    const params = JSON.stringify([[[photoId]], 1])
+    const result = await this.rpc(RPC.MoveToTrash, params)
+    // A successful trash returns a result (even if null/empty array)
+    return result !== undefined
   }
 
   async uploadPhoto(filePath: string): Promise<string | null> {
