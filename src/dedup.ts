@@ -6,9 +6,17 @@ export interface DuplicateGroup {
   photos: Photo[]
 }
 
-export async function findHashDuplicates(api: GooglePhotosAPI, limit: number): Promise<DuplicateGroup[]> {
-  console.log(`Scanning up to ${limit} photos for exact duplicates...`)
-  const photos = await api.listPhotos(limit)
+export interface DateRange {
+  from?: Date
+  to?: Date
+}
+
+export async function findHashDuplicates(api: GooglePhotosAPI, limit: number, dateRange?: DateRange): Promise<DuplicateGroup[]> {
+  const rangeStr = dateRange?.from || dateRange?.to
+    ? ` (${dateRange.from?.toISOString().split('T')[0] || '...'} to ${dateRange.to?.toISOString().split('T')[0] || '...'})`
+    : ''
+  console.log(`Scanning up to ${limit} photos for exact duplicates${rangeStr}...`)
+  const photos = await api.listPhotos(limit, dateRange)
   console.log(`  Found ${photos.length} photos`)
 
   // Group by content hash
@@ -34,10 +42,14 @@ export async function findHashDuplicates(api: GooglePhotosAPI, limit: number): P
 export async function findPerceptualDuplicates(
   api: GooglePhotosAPI,
   limit: number,
-  threshold = 5
+  threshold = 5,
+  dateRange?: DateRange
 ): Promise<DuplicateGroup[]> {
-  console.log(`Scanning up to ${limit} photos for perceptual duplicates (threshold=${threshold})...`)
-  const photos = await api.listPhotos(limit)
+  const rangeStr = dateRange?.from || dateRange?.to
+    ? ` (${dateRange.from?.toISOString().split('T')[0] || '...'} to ${dateRange.to?.toISOString().split('T')[0] || '...'})`
+    : ''
+  console.log(`Scanning up to ${limit} photos for perceptual duplicates (threshold=${threshold})${rangeStr}...`)
+  const photos = await api.listPhotos(limit, dateRange)
   console.log(`  Found ${photos.length} photos`)
 
   // Download thumbnails and compute perceptual hashes

@@ -1,6 +1,7 @@
 import type { AuthState, Photo, PhotoDetail } from './types'
 import { cookieHeader, loadAuth, login, parseTOTPSecret, saveAuth } from './auth'
 import { createHash } from 'crypto'
+import { RPC } from './rpc-ids'
 
 const BASE_URL = 'https://photos.google.com'
 const BATCH_EXECUTE_URL = `${BASE_URL}/_/PhotosUi/data/batchexecute`
@@ -130,12 +131,14 @@ export class GooglePhotosAPI {
     }
   }
 
-  async listPhotos(limit = 50): Promise<Photo[]> {
+  async listPhotos(limit = 50, opts?: { from?: Date; to?: Date }): Promise<Photo[]> {
     // lcxiM - list photos
     // params: [null, <timestamp_newest>, null, null, 1, 1, <timestamp_oldest>?]
-    const now = Date.now()
-    const params = JSON.stringify([null, now, null, null, 1, 1])
-    const result = await this.rpc('lcxiM', params)
+    const toTs = opts?.to ? opts.to.getTime() : Date.now()
+    const params = opts?.from
+      ? JSON.stringify([null, toTs, null, null, 1, 1, opts.from.getTime()])
+      : JSON.stringify([null, toTs, null, null, 1, 1])
+    const result = await this.rpc(RPC.GetLibraryPageByTakenDate, params)
 
     if (!result || !Array.isArray(result) || !Array.isArray(result[0])) {
       return []
@@ -145,7 +148,11 @@ export class GooglePhotosAPI {
     for (const item of result[0]) {
       if (!Array.isArray(item) || !item[0]) continue
       const photo = this.parsePhotoItem(item)
-      if (photo) photos.push(photo)
+      if (!photo) continue
+      // Client-side date filtering as a safety net
+      if (opts?.from && photo.createdAt < opts.from.getTime()) continue
+      if (opts?.to && photo.createdAt > opts.to.getTime()) continue
+      photos.push(photo)
       if (photos.length >= limit) break
     }
 
@@ -173,7 +180,7 @@ export class GooglePhotosAPI {
   async getPhotoDetail(photoId: string): Promise<PhotoDetail | null> {
     // VrseUb - get photo details
     const params = JSON.stringify([photoId, null, null, 1])
-    const result = await this.rpc('VrseUb', params, '1')
+    const result = await this.rpc(RPC.GetItemInfo, params, '1')
 
     if (!result || !Array.isArray(result)) return null
 
@@ -399,7 +406,7 @@ export class GooglePhotosAPI {
 
     // Commit with mdpdU
     const commitParams = JSON.stringify([[[uploadToken]]])
-    const commitResult = await this.rpc('mdpdU', commitParams)
+    const commitResult = await this.rpc(RPC.CommitUpload, commitParams)
 
     // The result should contain the new photo ID
     if (commitResult && Array.isArray(commitResult)) {
@@ -440,7 +447,7 @@ export class GooglePhotosAPI {
 
   async getUserInfo(): Promise<{ name: string; userId: string } | null> {
     const params = JSON.stringify([])
-    const result = await this.rpc('O3G8Nd', params)
+    const result = await this.rpc(RPC.GetUserProfile, params)
     if (!result) return null
     // Result is [[id, userId, null, ..., [name, ...], ...]]
     const user = Array.isArray(result[0]) ? result[0] : result

@@ -2,7 +2,7 @@
 import { Command } from 'commander'
 import { login, loadAuth, parseTOTPSecret } from './auth'
 import { GooglePhotosAPI } from './api'
-import { findHashDuplicates, findPerceptualDuplicates } from './dedup'
+import { findHashDuplicates, findPerceptualDuplicates, type DateRange } from './dedup'
 import { mkdirSync, existsSync } from 'fs'
 
 const program = new Command()
@@ -32,10 +32,16 @@ program
   .command('list')
   .description('List photos in library')
   .option('-n, --limit <n>', 'Max photos to list', '20')
+  .option('--from <date>', 'Only list photos taken after this date (YYYY-MM-DD)')
+  .option('--to <date>', 'Only list photos taken before this date (YYYY-MM-DD)')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     const api = await GooglePhotosAPI.create()
-    const photos = await api.listPhotos(parseInt(opts.limit))
+    const dateRange: DateRange = {}
+    if (opts.from) dateRange.from = new Date(opts.from)
+    if (opts.to) dateRange.to = new Date(opts.to)
+    const hasDateRange = dateRange.from || dateRange.to ? dateRange : undefined
+    const photos = await api.listPhotos(parseInt(opts.limit), hasDateRange)
 
     if (opts.json) {
       console.log(JSON.stringify(photos, null, 2))
@@ -180,6 +186,8 @@ program
   .option('-m, --method <method>', 'Detection method: hash, perceptual, both', 'hash')
   .option('-n, --limit <n>', 'Max photos to scan', '200')
   .option('--threshold <n>', 'Perceptual hash distance threshold', '5')
+  .option('--from <date>', 'Only scan photos taken after this date (YYYY-MM-DD)')
+  .option('--to <date>', 'Only scan photos taken before this date (YYYY-MM-DD)')
   .option('--dry-run', 'Only show duplicates, do not delete', true)
   .option('--delete', 'Actually delete duplicates (keeps newest)')
   .action(async (opts) => {
@@ -188,15 +196,32 @@ program
     const method = opts.method as string
     const dryRun = !opts.delete
 
+    const dateRange: DateRange = {}
+    if (opts.from) {
+      dateRange.from = new Date(opts.from)
+      if (isNaN(dateRange.from.getTime())) {
+        console.error(`Invalid --from date: ${opts.from} (use YYYY-MM-DD)`)
+        process.exit(1)
+      }
+    }
+    if (opts.to) {
+      dateRange.to = new Date(opts.to)
+      if (isNaN(dateRange.to.getTime())) {
+        console.error(`Invalid --to date: ${opts.to} (use YYYY-MM-DD)`)
+        process.exit(1)
+      }
+    }
+    const hasDateRange = dateRange.from || dateRange.to ? dateRange : undefined
+
     let allGroups: { hash: string; photos: any[] }[] = []
 
     if (method === 'hash' || method === 'both') {
-      const groups = await findHashDuplicates(api, limit)
+      const groups = await findHashDuplicates(api, limit, hasDateRange)
       allGroups.push(...groups)
     }
 
     if (method === 'perceptual' || method === 'both') {
-      const groups = await findPerceptualDuplicates(api, limit, parseInt(opts.threshold))
+      const groups = await findPerceptualDuplicates(api, limit, parseInt(opts.threshold), hasDateRange)
       // Merge, avoiding double-counting
       const seen = new Set(allGroups.flatMap(g => g.photos.map((p: any) => p.id)))
       for (const g of groups) {
