@@ -35,7 +35,7 @@ program
     const dateRange: DateRange = {}
     if (opts.from) dateRange.from = new Date(opts.from)
     if (opts.to) dateRange.to = new Date(opts.to)
-    const hasDateRange = dateRange.from || dateRange.to ? dateRange : undefined
+    const hasDateRange = (dateRange.from || dateRange.to) ? dateRange : undefined
     const photos = await api.listPhotos(parseInt(opts.limit), hasDateRange)
 
     if (opts.json) {
@@ -139,9 +139,11 @@ program
 
     if (!opts.yes) {
       process.stdout.write(`Trash photo ${photoId}? [y/N] `)
-      const buf = Buffer.alloc(10)
-      const n = require('fs').readSync(0, buf, 0, 10)
-      const answer = buf.toString('utf8', 0, n).trim().toLowerCase()
+      const answer = await new Promise<string>((resolve) => {
+        process.stdin.once('data', (data) => resolve(data.toString().trim().toLowerCase()))
+        process.stdin.resume()
+      })
+      process.stdin.pause()
       if (answer !== 'y' && answer !== 'yes') {
         console.log('Cancelled.')
         return
@@ -206,7 +208,7 @@ program
         process.exit(1)
       }
     }
-    const hasDateRange = dateRange.from || dateRange.to ? dateRange : undefined
+    const hasDateRange = (dateRange.from || dateRange.to) ? dateRange : undefined
 
     let allGroups: { hash: string; photos: any[] }[] = []
 

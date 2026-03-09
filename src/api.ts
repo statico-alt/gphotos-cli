@@ -1,11 +1,15 @@
 import type { AuthState, Photo, PhotoDetail } from './types'
-import { cookieHeader, loadAuth, login, parseTOTPSecret, saveAuth } from './auth'
+import { cookieHeader, loadAuth, saveAuth } from './auth'
 import { createHash } from 'crypto'
+import { existsSync } from 'fs'
 import { RPC } from './rpc-ids'
 
 const BASE_URL = 'https://photos.google.com'
 const BATCH_EXECUTE_URL = `${BASE_URL}/_/PhotosUi/data/batchexecute`
 const UPLOAD_URL = `${BASE_URL}/_/upload/uploadmedia/interactive`
+
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+const FETCH_TIMEOUT = 30_000 // 30 seconds
 
 export class GooglePhotosAPI {
   private auth: AuthState
@@ -23,26 +27,41 @@ export class GooglePhotosAPI {
   }
 
   private async rpc(rpcId: string, params: string, namespace = 'generic'): Promise<any> {
-    const freqPayload = JSON.stringify([[[rpcId, params, null, namespace]]])
-    const body = new URLSearchParams({
-      'f.req': freqPayload,
-      'at': this.auth.csrfToken,
-    }).toString()
+    const doRequest = async () => {
+      const freqPayload = JSON.stringify([[[rpcId, params, null, namespace]]])
+      const body = new URLSearchParams({
+        'f.req': freqPayload,
+        'at': this.auth.csrfToken,
+      }).toString()
 
-    const resp = await fetch(BATCH_EXECUTE_URL, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        'cookie': cookieHeader(this.auth.cookies),
-        'origin': BASE_URL,
-        'referer': `${BASE_URL}/`,
-        'x-same-domain': '1',
-      },
-      body,
-    })
+      const resp = await fetch(BATCH_EXECUTE_URL, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          'cookie': cookieHeader(this.auth.cookies),
+          'origin': BASE_URL,
+          'referer': `${BASE_URL}/`,
+          'x-same-domain': '1',
+          'user-agent': USER_AGENT,
+        },
+        body,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT),
+      })
+
+      return resp
+    }
+
+    let resp = await doRequest()
+
+    // Retry once with refreshed CSRF token on auth errors
+    if (resp.status === 401 || resp.status === 403) {
+      console.error(`RPC ${rpcId}: got ${resp.status}, refreshing CSRF token and retrying...`)
+      await this.refreshCsrfToken()
+      resp = await doRequest()
+    }
 
     if (!resp.ok) {
-      throw new Error(`RPC ${rpcId} failed: ${resp.status} ${resp.statusText}`)
+      throw new Error(`RPC ${rpcId} failed: ${resp.status} ${resp.statusText}. Try running 'gphotos refresh' to update your CSRF token.`)
     }
 
     const text = await resp.text()
@@ -111,8 +130,10 @@ export class GooglePhotosAPI {
     const resp = await fetch(BASE_URL, {
       headers: {
         'cookie': cookieHeader(this.auth.cookies),
+        'user-agent': USER_AGENT,
       },
       redirect: 'follow',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
     })
     const html = await resp.text()
     const match = html.match(/"SNlM0e":"([^"]+)"/)
@@ -132,28 +153,39 @@ export class GooglePhotosAPI {
   }
 
   async listPhotos(limit = 50, opts?: { from?: Date; to?: Date }): Promise<Photo[]> {
-    // lcxiM - list photos
-    // params: [null, <timestamp_newest>, null, null, 1, 1, <timestamp_oldest>?]
-    const toTs = opts?.to ? opts.to.getTime() : Date.now()
-    const params = opts?.from
-      ? JSON.stringify([null, toTs, null, null, 1, 1, opts.from.getTime()])
-      : JSON.stringify([null, toTs, null, null, 1, 1])
-    const result = await this.rpc(RPC.GetLibraryPageByTakenDate, params)
-
-    if (!result || !Array.isArray(result) || !Array.isArray(result[0])) {
-      return []
-    }
-
     const photos: Photo[] = []
-    for (const item of result[0]) {
-      if (!Array.isArray(item) || !item[0]) continue
-      const photo = this.parsePhotoItem(item)
-      if (!photo) continue
-      // Client-side date filtering as a safety net
-      if (opts?.from && photo.createdAt < opts.from.getTime()) continue
-      if (opts?.to && photo.createdAt > opts.to.getTime()) continue
-      photos.push(photo)
-      if (photos.length >= limit) break
+    let continuationToken: string | null = null
+
+    while (photos.length < limit) {
+      const toTs = opts?.to ? opts.to.getTime() : Date.now()
+      const params = continuationToken
+        ? JSON.stringify([null, toTs, continuationToken, null, 1, 1, opts?.from ? opts.from.getTime() : null])
+        : opts?.from
+          ? JSON.stringify([null, toTs, null, null, 1, 1, opts.from.getTime()])
+          : JSON.stringify([null, toTs, null, null, 1, 1])
+      const result = await this.rpc(RPC.GetLibraryPageByTakenDate, params)
+
+      if (!result || !Array.isArray(result) || !Array.isArray(result[0])) {
+        break
+      }
+
+      let addedThisPage = 0
+      for (const item of result[0]) {
+        if (!Array.isArray(item) || !item[0]) continue
+        const photo = this.parsePhotoItem(item)
+        if (!photo) continue
+        if (opts?.from && photo.createdAt < opts.from.getTime()) continue
+        if (opts?.to && photo.createdAt > opts.to.getTime()) continue
+        photos.push(photo)
+        addedThisPage++
+        if (photos.length >= limit) break
+      }
+
+      // Check for continuation token (usually at result[1])
+      continuationToken = typeof result[1] === 'string' ? result[1] : null
+
+      // Stop if no more pages or no items were added
+      if (!continuationToken || addedThisPage === 0) break
     }
 
     return photos
@@ -215,10 +247,10 @@ export class GooglePhotosAPI {
 
     const downloadUrl = `${detail.url}=s0-d`
 
-    // Download using SAPISIDHASH auth headers (needed for CDN domain)
     const resp = await fetch(downloadUrl, {
-      headers: this.getAuthHeaders(downloadUrl),
+      headers: { ...this.getAuthHeaders(downloadUrl), 'user-agent': USER_AGENT },
       redirect: 'follow',
+      signal: AbortSignal.timeout(120_000), // 2 min timeout for large files
     })
 
     if (!resp.ok) {
@@ -227,9 +259,18 @@ export class GooglePhotosAPI {
 
     const contentType = resp.headers.get('content-type') || ''
     const ext = this.guessExtension(contentType)
-    const filename = outputPath.endsWith('/') ?
-      `${outputPath}${photoId}${ext}` :
-      outputPath
+    let filename: string
+    if (outputPath.endsWith('/')) {
+      filename = `${outputPath}${photoId}${ext}`
+      // Handle filename collisions
+      if (existsSync(filename)) {
+        let i = 1
+        while (existsSync(`${outputPath}${photoId}_${i}${ext}`)) i++
+        filename = `${outputPath}${photoId}_${i}${ext}`
+      }
+    } else {
+      filename = outputPath
+    }
 
     const buffer = await resp.arrayBuffer()
     await Bun.write(filename, new Uint8Array(buffer))
@@ -305,8 +346,10 @@ export class GooglePhotosAPI {
         'x-goog-hash': `sha1=${sha1}`,
         'origin': BASE_URL,
         'referer': `${BASE_URL}/`,
+        'user-agent': USER_AGENT,
       },
       body: initBody,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT),
     })
 
     const uploadUrl = initResp.headers.get('x-goog-upload-url')
@@ -325,8 +368,10 @@ export class GooglePhotosAPI {
         'x-goog-hash': `sha1=${sha1}`,
         'x-goog-upload-file-name': filename,
         'content-type': 'application/octet-stream',
+        'user-agent': USER_AGENT,
       },
       body: bytes,
+      signal: AbortSignal.timeout(120_000),
     })
 
     if (!uploadResp.ok) {

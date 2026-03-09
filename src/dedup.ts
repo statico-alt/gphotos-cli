@@ -60,17 +60,23 @@ export async function findPerceptualDuplicates(
     if (!photo.url) continue
     try {
       const thumbUrl = `${photo.url}=w64-h64-c`
-      const resp = await fetch(thumbUrl)
-      if (!resp.ok) continue
+      const resp = await fetch(thumbUrl, {
+        signal: AbortSignal.timeout(15_000),
+      })
+      if (!resp.ok) {
+        console.error(`  Warning: Failed to fetch thumbnail for ${photo.id}: ${resp.status}`)
+        continue
+      }
       const buf = await resp.arrayBuffer()
+      if (buf.byteLength === 0) continue
       const hash = averageHash(new Uint8Array(buf))
       hashes.push({ photo, hash })
       count++
       if (count % 20 === 0) {
         process.stdout.write(`  Hashed ${count}/${photos.length} photos\r`)
       }
-    } catch {
-      // Skip on error
+    } catch (err) {
+      console.error(`  Warning: Error processing ${photo.id}: ${err instanceof Error ? err.message : 'unknown error'}`)
     }
   }
   console.log(`  Computed ${hashes.length} perceptual hashes`)
@@ -101,10 +107,17 @@ export async function findPerceptualDuplicates(
   return groups
 }
 
-// Simple average hash for raw image data (expects decoded pixel data)
-// Since we can't easily decode JPEG in Bun without a library, we'll hash raw bytes
+/**
+ * Approximate perceptual hash from raw thumbnail bytes.
+ * Note: This operates on compressed JPEG bytes rather than decoded pixels.
+ * It works well for Google Photos thumbnails since the same source image at
+ * the same dimensions produces identical JPEG output. However, it will NOT
+ * detect near-duplicates from different source files (e.g. screenshots of
+ * the same content, or re-compressed versions). For exact duplicate detection,
+ * use the 'hash' method which compares Google's server-side content hashes.
+ */
 function averageHash(data: Uint8Array): bigint {
-  // Use blocks of the raw data as a rough perceptual hash
+  // Divide compressed bytes into 64 blocks and compare each block's average to the global average
   const blockSize = Math.max(1, Math.floor(data.length / 64))
   const values: number[] = []
 

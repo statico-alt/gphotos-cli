@@ -94,12 +94,19 @@ export async function importCookies(cookieFile: string): Promise<AuthState> {
   console.log('Fetching CSRF token from photos.google.com...')
 
   const resp = await fetch(PHOTOS_URL, {
-    headers: { 'cookie': cookieHeader(cookies) },
+    headers: {
+      'cookie': cookieHeader(cookies),
+      'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    },
     redirect: 'follow',
+    signal: AbortSignal.timeout(30_000),
   })
   const html = await resp.text()
 
-  const csrfMatch = html.match(/"SNlM0e":"([^"]+)"/)
+  // Try multiple known CSRF token patterns for resilience
+  const csrfMatch = html.match(/"SNlM0e":"([^"]+)"/) ||
+    html.match(/"FdrFJe":"([^"]+)"/) ||
+    html.match(/SNlM0e['"]\s*:\s*['"]([\w-]+)['"]/)
   if (!csrfMatch) {
     throw new Error(
       'Could not extract CSRF token. Your cookies may be expired or invalid. ' +
